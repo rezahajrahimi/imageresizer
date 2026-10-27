@@ -66,11 +66,11 @@ func (r *canvasRenderer) MinSize() fyne.Size {
 
 func (r *canvasRenderer) Refresh() {
 	if r.interactive.state.previewImg != nil {
-		canvas.Refresh(r.interactive.state.previewImg)
+		r.interactive.state.previewImg.Refresh()
 	}
 	if r.interactive.state.cropOverlay != nil {
 		r.interactive.updateCropOverlayGeometry(r.interactive.Size())
-		canvas.Refresh(r.interactive.state.cropOverlay)
+		r.interactive.state.cropOverlay.Refresh()
 	}
 }
 
@@ -204,6 +204,7 @@ type AppState struct {
 	searchQuery     string
 	extFilter       string
 	sortOrder       string
+	currentFolder   string
 	currentIndex    int
 
 	originalPath string
@@ -320,11 +321,13 @@ func (s *AppState) buildUI() {
 
 	openFilesBtn := widget.NewButtonWithIcon("انتخاب فایل‌ها", theme.FileImageIcon(), s.openNativeFiles)
 	openFolderBtn := widget.NewButtonWithIcon("باز کردن پوشه", theme.FolderOpenIcon(), s.openFolderDialog)
+	refreshFolderBtn := widget.NewButtonWithIcon("بروزرسانی پوشه (Refresh)", theme.ViewRefreshIcon(), s.refreshFolder)
 
 	filterSortRow := container.NewGridWithColumns(2, s.filterSelect, s.sortSelect)
 
 	folderHeader := container.NewVBox(
-		container.NewGridWithColumns(2, openFilesBtn, openFolderBtn),
+		container.NewGridWithColumns(2, openFolderBtn, openFilesBtn),
+		refreshFolderBtn,
 		s.searchEntry,
 		filterSortRow,
 	)
@@ -577,9 +580,34 @@ func (s *AppState) applyFileFilter() {
 	s.fileListView.Refresh()
 
 	if len(filtered) > 0 {
-		s.currentIndex = 0
-		s.fileListView.Select(0)
+		targetIdx := 0
+		if s.originalPath != "" {
+			for i, p := range filtered {
+				if p == s.originalPath {
+					targetIdx = i
+					break
+				}
+			}
+		}
+		s.currentIndex = targetIdx
+		s.fileListView.UnselectAll()
+		s.fileListView.Select(targetIdx)
+	} else {
+		s.currentIndex = -1
+		s.fileListView.UnselectAll()
 	}
+}
+
+func (s *AppState) refreshFolder() {
+	targetDir := s.currentFolder
+	if targetDir == "" && s.originalPath != "" {
+		targetDir = filepath.Dir(s.originalPath)
+	}
+	if targetDir == "" {
+		dialog.ShowInformation("پوشه‌ای باز نیست", "ابتدا یک پوشه باز کنید تا امکان بروزرسانی وجود داشته باشد.", s.window)
+		return
+	}
+	s.loadDirectory(targetDir)
 }
 
 func (s *AppState) syncCropEntries() {
@@ -637,6 +665,7 @@ func (s *AppState) loadDirectory(dirPath string) {
 		return
 	}
 
+	s.currentFolder = dirPath
 	s.fileList = validFiles
 	s.applyFileFilter()
 }
@@ -671,6 +700,7 @@ func (s *AppState) openNativeFiles() {
 		return
 	}
 
+	s.currentFolder = filepath.Dir(validFiles[0])
 	s.fileList = validFiles
 	s.applyFileFilter()
 }
@@ -682,6 +712,7 @@ func (s *AppState) openFallbackFyneDialog() {
 		}
 		path := reader.URI().Path()
 		reader.Close()
+		s.currentFolder = filepath.Dir(path)
 		s.fileList = []string{path}
 		s.applyFileFilter()
 	}, s.window)
@@ -742,7 +773,9 @@ func (s *AppState) updatePreview(img image.Image) {
 		return
 	}
 	s.previewImg.Resource = nil
+	s.previewImg.File = ""
 	s.previewImg.Image = img
+	s.previewImg.Refresh()
 	s.interCanvas.Refresh()
 }
 
@@ -898,6 +931,7 @@ func (s *AppState) saveOverwrite() {
 		s.origWidth = processed.Bounds().Dx()
 		s.origHeight = processed.Bounds().Dy()
 		s.resetCrop()
+		s.updatePreview(processed)
 
 		fi, _ := os.Stat(s.originalPath)
 		var sizeKB float64
@@ -951,6 +985,11 @@ func (s *AppState) saveAs() {
 	if err := s.encodeToFile(processed, targetPath); err != nil {
 		dialog.ShowError(err, s.window)
 		return
+	}
+
+	if s.currentFolder != "" && filepath.Dir(targetPath) == s.currentFolder {
+		s.originalPath = targetPath
+		s.loadDirectory(s.currentFolder)
 	}
 
 	fi, _ := os.Stat(targetPath)
